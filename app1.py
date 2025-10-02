@@ -47,8 +47,9 @@ def extrair_produtos(texto):
             cod, qtd, _ = resultados[i]
             resultados[i] = (cod, qtd, precos_convertidos[i])
     else:
-        for preco in precos_convertidos:
-            resultados.append((None, None, preco))
+        # Aqui estava adicionando preços sem produto → gerava Produto = None
+        # Vou manter apenas os preços se existir produto
+        pass
 
     return resultados
 
@@ -105,7 +106,7 @@ def main():
             for produto, qtd, preco in produtos_extraidos:
                 dados_tratados.append({
                     "Data": row.get("Data", None),
-                    "Produto": str(produto).strip(),
+                    "Produto": str(produto).strip() if produto else None,
                     "Quantidade": qtd,
                     "Preco_Solicitado": preco,
                     "Estado": estado,
@@ -115,6 +116,10 @@ def main():
 
         df_tratado = pd.DataFrame(dados_tratados)
         df_tratado["Data"] = pd.to_datetime(df_tratado["Data"], errors="coerce").dt.date
+
+        # 🔧 Drop nas linhas com Produto = None ou "None"
+        df_tratado = df_tratado.dropna(subset=["Produto"])
+        df_tratado = df_tratado[df_tratado["Produto"].str.lower() != "none"]
 
         st.subheader("📊 Dados Tratados (Produtos separados)")
         st.dataframe(df_tratado)
