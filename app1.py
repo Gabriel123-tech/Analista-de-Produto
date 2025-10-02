@@ -26,11 +26,13 @@ def extrair_produtos(texto):
             else:
                 resultados.append((b, int(a), None))
 
+    # Produtos sem quantidade (apenas código solto)
     produtos_soltos = re.findall(r"\b\d{5,}\b", texto)
     for cod in produtos_soltos:
         if not any(cod == r[0] for r in resultados):
             resultados.append((cod, None, None))
 
+    # Preços encontrados
     precos = re.findall(r"R\$\s?([\d.,]+)", texto)
     precos_convertidos = []
     for p in precos:
@@ -39,6 +41,7 @@ def extrair_produtos(texto):
         except:
             precos_convertidos.append(None)
 
+    # Associar preços aos produtos quando possível
     if resultados and precos_convertidos:
         for i in range(min(len(resultados), len(precos_convertidos))):
             cod, qtd, _ = resultados[i]
@@ -77,12 +80,13 @@ def formatar_texto(texto):
 def main():
     st.set_page_config(page_title="Analisador de Produtos", layout="wide")
     st.title("📊 Analisador de Produtos")
+    st.write("✅ App iniciado com sucesso")
 
     arquivo = st.file_uploader("Carregue a planilha Excel", type=["xlsx"])
 
     if arquivo:
         df = pd.read_excel(arquivo, sheet_name="Respostas do Formulário 1")
-        df.columns = df.columns.str.strip()  # Limpa espaços nos nomes das colunas
+        df.columns = df.columns.str.strip()
 
         st.subheader("📂 Base Original")
         st.dataframe(df.head(10))
@@ -101,7 +105,7 @@ def main():
             for produto, qtd, preco in produtos_extraidos:
                 dados_tratados.append({
                     "Data": row.get("Data", None),
-                    "Produto": produto,
+                    "Produto": str(produto).strip(),
                     "Quantidade": qtd,
                     "Preco_Solicitado": preco,
                     "Estado": estado,
@@ -134,39 +138,83 @@ def main():
             st.warning("Nenhuma data válida encontrada na base.")
             df_filtrado = df_tratado.copy()
 
+        # 🔧 Padronizar colunas para filtragem
+        df_padronizado = df_filtrado.copy()
+        for col in ["Estado", "Produto", "Solicitante", "Motivo"]:
+            if col in df_padronizado.columns:
+                df_padronizado[col] = df_padronizado[col].astype(str).str.strip().str.title()
+
+        # 🔍 Filtros interativos
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            estado_selecionado = st.multiselect("📍 Filtrar por Estado", options=sorted(df_padronizado["Estado"].dropna().unique()))
+        with col2:
+            produto_selecionado = st.multiselect("📦 Filtrar por Produto", options=sorted(df_padronizado["Produto"].dropna().unique()))
+        with col3:
+            solicitante_selecionado = st.multiselect("🧑 Filtrar por Solicitante", options=sorted(df_padronizado["Solicitante"].dropna().unique()))
+
+        if "Motivo" in df_padronizado.columns:
+            motivo_selecionado = st.multiselect("📝 Filtrar por Motivo", options=sorted(df_padronizado["Motivo"].dropna().unique()))
+        else:
+            motivo_selecionado = []
+            st.warning("Coluna 'Motivo' não encontrada nos dados.")
+
+        # Aplicar filtros
+        if estado_selecionado:
+            df_padronizado = df_padronizado[df_padronizado["Estado"].isin(estado_selecionado)]
+        if produto_selecionado:
+            df_padronizado = df_padronizado[df_padronizado["Produto"].isin(produto_selecionado)]
+        if solicitante_selecionado:
+            df_padronizado = df_padronizado[df_padronizado["Solicitante"].isin(solicitante_selecionado)]
+        if motivo_selecionado:
+            df_padronizado = df_padronizado[df_padronizado["Motivo"].isin(motivo_selecionado)]
+
+        # 📊 Produtos mais solicitados por Estado
         st.subheader("📊 Produtos mais solicitados por Estado")
-        if not df_filtrado.empty:
+        if not df_padronizado.empty:
             mais_solicitados = (
-                df_filtrado.groupby(["Data", "Estado", "Produto"])["Quantidade"]
+                df_padronizado.groupby(["Data", "Estado", "Produto"])["Quantidade"]
                 .sum()
                 .reset_index()
             )
             st.dataframe(mais_solicitados.sort_values(["Data", "Estado", "Quantidade"], ascending=[True, True, False]))
 
+        # 📊 Solicitantes com mais pedidos
         st.subheader("📊 Solicitantes com mais pedidos")
-        if not df_filtrado.empty:
+        if not df_padronizado.empty:
             solicitantes = (
-                df_filtrado.groupby(["Data", "Solicitante"])["Produto"]
+                df_padronizado.groupby(["Data", "Solicitante"])["Produto"]
                 .count()
                 .reset_index()
                 .rename(columns={"Produto": "Total_Solicitacoes"})
             )
             st.dataframe(solicitantes.sort_values(["Data", "Total_Solicitacoes"], ascending=[True, False]))
 
+        # 📊 Motivos mais recorrentes
         st.subheader("📊 Motivos mais recorrentes por dia")
-        if not df_filtrado.empty:
+        if not df_padronizado.empty and "Motivo" in df_padronizado.columns:
             motivos = (
-                df_filtrado.groupby(["Data", "Motivo"])["Produto"]
+                df_padronizado.groupby(["Data", "Motivo"])["Produto"]
                 .count()
                 .reset_index()
                 .rename(columns={"Produto": "Qtd"})
             )
             st.dataframe(motivos.sort_values(["Data", "Qtd"], ascending=[True, False]))
 
-        excel_final = "dados_tratados.xlsx"
-        df_tratado.to_excel(excel_final, index=False)
-        with open(excel_final, "rb") as f:
-            st.download_button("📥 Baixar Excel Tratado", f, file_name=excel_final)
+        # 📥 Exportar Excel filtrado
+        excel_filtrado = "dados_filtrados.xlsx"
+        df_padronizado.to_excel(excel_filtrado, index=False)
+        with open(excel_filtrado, "rb") as f:
+            st.download_button("📥 Baixar Excel Filtrado", f, file_name=excel_filtrado)
+
+        # 📥 Exportar Excel completo tratado
+        excel_completo = "dados_completos.xlsx"
+        df_tratado.to_excel(excel_completo, index=False)
+        with open(excel_completo, "rb") as f:
+            st.download_button("📥 Baixar Excel Completo", f, file_name=excel_completo)
+
+    else:
+        st.info("📁 Carregue uma planilha Excel para começar a análise.")
 
 if __name__ == "__main__":
     main()
