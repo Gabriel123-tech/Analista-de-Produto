@@ -3,6 +3,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 from datetime import datetime
+import unicodedata # Importação necessária para remover acentos
 
 # -------------------------
 # Configuração inicial do Streamlit
@@ -86,25 +87,52 @@ def formatar_texto(texto):
     texto = texto.strip()
     return texto.title() if texto else None
 
+def remover_acentos(texto):
+    """NOVA FUNÇÃO: Remove acentos de uma string, transformando 'Paraná' em 'Parana' para a comparação."""
+    if not isinstance(texto, str):
+        return texto
+    # Normaliza para forma D (separando caractere e acento) e filtra o acento (categoria 'Mn')
+    return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
+
+
 def padronizar_estado(estado):
-    """Padroniza nomes de estados (ex: 'ms' para 'Mato Grosso Do Sul')."""
+    """FUNÇÃO ATUALIZADA: Padroniza nomes de estados, usando a versão sem acento como chave para mapeamento."""
     if not isinstance(estado, str):
         return estado
-    estado = estado.strip().lower()
+        
+    # Usa a versão sem acento e minúscula como chave de comparação
+    estado_chave = remover_acentos(estado).strip().lower() 
+    
+    # O valor do mapa é a versão final que queremos exibir (com acento correto)
     mapa = {
-        "ms": "Mato Grosso Do Sul",
-        "mato grosso do sul": "Mato Grosso Do Sul",
+        "ms": "Mato Grosso do Sul",
+        "mato grosso do sul": "Mato Grosso do Sul",
         "sc": "Santa Catarina",
-        "rs": "Rio Grande Do Sul",
-        "pr": "Paraná",
-        "sp": "São Paulo",
+        "rs": "Rio Grande do Sul",
+        "pr": "Paraná", # 'pr' (sem acento) ou 'parana' (sem acento) padronizam para 'Paraná'
+        "parana": "Paraná",
+        "sp": "São Paulo", # 'sp' (sem acento) ou 'sao paulo' (sem acento) padronizam para 'São Paulo'
+        "sao paulo": "São Paulo",
     }
-    return mapa.get(estado, estado.title())
+    
+    # Tenta encontrar no mapa. Se não encontrar, retorna o texto original formatado.
+    return mapa.get(estado_chave, formatar_texto(estado))
 
 def padronizar_produto(prod):
-    """Garante que o código do produto seja tratado como string categórica."""
+    """FUNÇÃO ATUALIZADA: Remove zeros à esquerda (ex: '00012026' -> '12026')."""
     if not isinstance(prod, str):
         prod = str(prod)
+    
+    prod = prod.strip()
+    
+    # Remove zeros à esquerda se for um código numérico
+    try:
+        if prod.isdigit():
+            # Converte para inteiro (remove zeros) e depois para string
+            return str(int(prod))
+    except ValueError:
+        pass # Caso não seja um número (embora isdigit() já garanta isso), mantém a string original
+
     return prod.strip()
 
 def padronizar_motivo(motivo):
@@ -165,6 +193,7 @@ def main():
         coluna_motivo = "MOTIVO:" if "MOTIVO:" in df.columns else None
         
         for index, row in df.iterrows():
+            # Concatena os textos para extrair o máximo de informação
             texto_produtos = str(row.get(coluna_produto_preco, "")) + " " + str(row.get(coluna_analise, ""))
             
             produtos_extraidos = extrair_produtos(texto_produtos)
@@ -196,7 +225,7 @@ def main():
         df_tratado = df_tratado.dropna(subset=["Produto"])
         df_tratado = df_tratado[df_tratado["Produto"].str.lower() != "none"]
 
-        # 6. Padronização final
+        # 6. Padronização final (Utiliza as funções ATUALIZADAS)
         df_tratado["Produto"] = df_tratado["Produto"].apply(padronizar_produto)
         df_tratado["Estado"] = df_tratado["Estado"].apply(padronizar_estado)
         df_tratado["Solicitante"] = df_tratado["Solicitante"].astype(str).apply(formatar_texto)
@@ -208,8 +237,9 @@ def main():
         st.sidebar.header("Filtros de Análise")
         
         # 1. Filtro de Data
-        min_date = df_tratado["Data"].min().date() if not df_tratado["Data"].min() is pd.NaT else datetime.now().date()
-        max_date = df_tratado["Data"].max().date() if not df_tratado["Data"].max() is pd.NaT else datetime.now().date()
+        data_validas = df_tratado["Data"].dropna().dt.date
+        min_date = data_validas.min() if not data_validas.empty else datetime.now().date()
+        max_date = data_validas.max() if not data_validas.empty else datetime.now().date()
 
         st.sidebar.markdown("##### 📅 Filtro por Período")
         col_data1, col_data2 = st.sidebar.columns(2)
@@ -261,7 +291,9 @@ def main():
         with col_metrica2:
             st.metric("Volume Total de Itens", f"{total_quantidade:,.0f}".replace(",", "X").replace(".", ",").replace("X", "."))
         with col_metrica3:
-            st.metric("Média de Preço Solicitado", f"R$ {media_preco:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+            # Garante que 'media_preco' não seja NaN antes de formatar
+            display_preco = f"R$ {media_preco:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if not pd.isna(media_preco) else "N/A"
+            st.metric("Média de Preço Solicitado", display_preco)
         with col_metrica4:
             st.metric("Total de Produtos Únicos", df_filtros["Produto"].nunique())
 
@@ -351,7 +383,7 @@ def main():
             markers=True, 
             title=titulo_tempo,
             template="plotly_white",
-            color_discrete_sequence=['#ff7f0e'] # Cor única para simplificar
+            color_discrete_sequence=['#ff7f0e']
         )
         
         # Formatação
@@ -361,7 +393,7 @@ def main():
             categoryarray=ordem_tempo,
             title_text=coluna_tempo
         )
-        fig_tempo.update_layout(showlegend=False) # Remove legenda, pois há apenas uma linha
+        fig_tempo.update_layout(showlegend=False)
         
         st.plotly_chart(fig_tempo, use_container_width=True)
             
