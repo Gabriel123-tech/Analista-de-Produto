@@ -2,7 +2,6 @@ import re
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 import unicodedata 
 
@@ -16,7 +15,7 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# Novo CSS para tema profissional (DARK MODE, Cards e Tipografia)
+# CSS (Mantido)
 # ----------------------------------------------------
 st.markdown(
     """
@@ -103,8 +102,8 @@ st.markdown(
 
 def formatar_valor_metrica(numero):
     """
-    Formata um número grande em formato métrico (K, M, B) para exibição compacta, 
-    usando até duas casas decimais, conforme o estilo Power BI.
+    Formata um número financeiro grande em formato métrico (K, M, B) para exibição compacta, 
+    usando R$ e vírgula decimal (padrão BR).
     """
     if pd.isna(numero) or numero is None:
         return "R$ N/A"
@@ -142,45 +141,124 @@ def formatar_valor_metrica(numero):
     
     return f"R$ {valor_formatado}{prefixo}"
 
+# VERSÃO FINAL: Função para formatar Quantidade/Volume em K/M/B (sem R$)
+def formatar_quantidade_metrica(numero):
+    """
+    Formata um número grande (volume ou contagem) em notação métrica (K, M, B)
+    com vírgula como separador decimal (padrão BR) OU retorna o inteiro formatado (se < 1000).
+    """
+    if pd.isna(numero) or numero is None:
+        return "0"
+
+    numero_original = round(numero) # Arredonda para inteiro para contagem de itens
+    
+    bilhao = 1_000_000_000
+    milhao = 1_000_000
+    mil = 1_000
+
+    prefixo = ""
+    divisor = 1
+    casas_decimais = 2
+    
+    if numero_original >= bilhao:
+        prefixo = " B"
+        divisor = bilhao
+    elif numero_original >= milhao:
+        prefixo = " M"
+        divisor = milhao
+    elif numero_original >= mil:
+        prefixo = " K"
+        divisor = mil
+    else:
+        # Se for menor que mil, retorna o próprio valor inteiro como string 
+        # Formata com separador de milhar para facilitar a leitura (Ex: "9.876")
+        return f"{numero_original:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        
+    # Lógica de formatação para K, M, B
+    valor_na_unidade = numero_original / divisor
+    
+    formato = "{:,." + str(casas_decimais) + "f}"
+    valor_formatado = formato.format(valor_na_unidade)
+    
+    # Faz a substituição do separador decimal: Ponto(EUA) -> Vírgula(BR)
+    valor_formatado_br = valor_formatado.replace(",", "X").replace(".", ",").replace("X", ".")
+    
+    return f"{valor_formatado_br}{prefixo}".strip()
+# ------------------------------------
+
 
 # -------------------------
-# Função para extrair produtos, quantidades e preços (Mantido)
+# Funções auxiliares de extração e padronização 
 # -------------------------
 def extrair_produtos(texto):
-    """Extrai código, quantidade e preço de um texto usando diversos padrões."""
+    """
+    Extrai código, quantidade e preço de um texto usando diversos padrões,
+    com lógica aprimorada para distinguir CÓDIGO (5+ dígitos) de QUANTIDADE 
+    e mitigar a atribuição de grandes volumes.
+    """
     if not isinstance(texto, str):
         return []
 
     texto = texto.upper()
     resultados = []
+    codigos_extraidos = set() # Conjunto para rastrear códigos já encontrados
 
-    # Padrões para código (5+ dígitos) e quantidade
-    padroes = [
-        r"(\d{5,})\s*[- ]\s*(\d+)",
-        r"(\d+)\s*[X ]\s*(\d{5,})",
-        r"(\d+)\s*(?:UN|UNID|UND|UNIDADES?)\s*(\d{5,})",
-        r"(\d{5,})\s+(\d+)",
+    # --- REGEX 1: PADRÕES CLAROS (CÓDIGO X QUANTIDADE) ---
+    # Prioriza padrões explícitos como '23131 X 4', '4 - 23131', '4UN 23131'
+    padroes_com_qtd_separador = [
+        # Padrão: CÓDIGO (5+) seguido por separador e QTD (1+)
+        r"(\d{5,})\s*[X-]\s*(\d{1,})", 
+        # Padrão: QTD (1+) seguido por separador e CÓDIGO (5+)
+        r"(\d{1,})\s*[X-]\s*(\d{5,})", 
+        # Padrão: QTD (1+) seguida de UN/UNID e CÓDIGO (5+)
+        r"(\d{1,})\s*(?:UN|UNID|UND|UNIDADES?)\s*(\d{5,})",
     ]
 
-    for padrao in padroes:
-        for a, b in re.findall(padrao, texto):
-            if len(a) >= 5:
-                # a é o código, b é a quantidade
-                resultados.append((a, int(b), None))
-            else:
-                # b é o código, a é a quantidade
-                resultados.append((b, int(a), None))
+    # Limite de sanidade para a Quantidade (ex: 5000 itens é um volume razoável)
+    LIMITE_QTD_MAXIMA = 5000
 
-    # Captura códigos soltos (5+ dígitos) sem quantidade
+    for padrao in padroes_com_qtd_separador:
+        for a, b in re.findall(padrao, texto):
+            
+            # --- LÓGICA DE DEFINIÇÃO DE CÓDIGO E QUANTIDADE ---
+            cod, qtd_str = None, None
+            
+            # Caso 1: A é CÓDIGO (5+) e B é QTD (menos de 5 dígitos)
+            if len(a) >= 5 and len(b) < 5:
+                cod = padronizar_produto(a)
+                qtd_str = b
+            # Caso 2: B é CÓDIGO (5+) e A é QTD (menos de 5 dígitos)
+            elif len(b) >= 5 and len(a) < 5:
+                cod = padronizar_produto(b)
+                qtd_str = a
+            else:
+                 # Se ambos tiverem 5+ dígitos, ignora (evita falsos positivos em números grandes)
+                continue
+            
+            # --- CONVERSÃO E VALIDAÇÃO DE QUANTIDADE ---
+            try:
+                qtd = int(qtd_str)
+            except ValueError:
+                continue 
+                
+            if cod and qtd > 0 and qtd <= LIMITE_QTD_MAXIMA:
+                if cod not in codigos_extraidos:
+                    resultados.append((cod, qtd, None))
+                    codigos_extraidos.add(cod)
+
+    # --- REGEX 2: CÓDIGOS SOLTOS (5+ dígitos, sem quantidade clara) ---
+    # Só adiciona se o código NÃO foi encontrado com quantidade explícita antes
     produtos_soltos = re.findall(r"\b\d{5,}\b", texto)
     for cod in produtos_soltos:
-        if not any(cod == r[0] for r in resultados):
-            # Adiciona com quantidade 1 como padrão se não foi encontrado com quantidade
-            if not any(r[0] == cod and r[1] is not None for r in resultados):
-                 resultados.append((cod, 1, None)) 
+        cod_padronizado = padronizar_produto(cod)
+        
+        if cod_padronizado not in codigos_extraidos:
+            # Adiciona com quantidade 1 como padrão
+            resultados.append((cod_padronizado, 1, None))
+            codigos_extraidos.add(cod_padronizado)
 
 
-    # Extrai preços R$
+    # --- REGEX 3: EXTRAÇÃO DE PREÇOS (Opcional) ---
     precos = re.findall(r"R\$\s?([\d.,]+)", texto)
     precos_convertidos = []
     for p in precos:
@@ -198,9 +276,7 @@ def extrair_produtos(texto):
 
     return resultados
 
-# -------------------------
-# Funções auxiliares de padronização (Mantido)
-# -------------------------
+
 def extrair_campos(texto):
     """Extrai campos como solicitante, estado e motivo do texto da negociação."""
     solicitantes = re.search(r'solicitante[s]?\s*:\s*(.*)', texto, re.IGNORECASE)
@@ -317,6 +393,106 @@ def padronizar_motivo(motivo):
 
     return formatar_texto(motivo)
 
+# ------------------------------------
+# Função de Carregamento e Tratamento (Com Cache e Spinner)
+# ------------------------------------
+
+@st.cache_data
+def load_data(arquivo):
+    """
+    Carrega o arquivo, trata e padroniza os dados.
+    Esta função usa o cache para evitar reprocessamento desnecessário.
+    """
+    try:
+        # Tenta carregar a aba correta
+        df = pd.read_excel(arquivo, sheet_name="Respostas do Formulário 1")
+    except ValueError:
+        st.error("Erro: A planilha 'Respostas do Formulário 1' não foi encontrada. Verifique o nome da aba.")
+        return pd.DataFrame() 
+    except Exception as e:
+        st.error(f"Erro ao carregar o arquivo: {e}")
+        return pd.DataFrame()
+
+    df.columns = df.columns.str.strip()
+
+    # Mapeamento de Colunas (para maior flexibilidade e evitar KeyError)
+    # A coluna de data de formulários do Google/Microsoft é frequentemente "Carimbo de data/hora"
+    coluna_data = "Carimbo de data/hora" 
+    coluna_produto_preco = "CODIGO DO PRODUTO, QUANTIDADE E PREÇO SOLICITADO:"
+    coluna_analise = "ANALISE NEGOCIAÇÃO"
+    coluna_estado = "ESTADO:"
+    coluna_solicitante = "SOLICITANTE:"
+    coluna_motivo = "MOTIVO:"
+    
+    # Verifica a existência das colunas
+    coluna_data = coluna_data if coluna_data in df.columns else (
+        "Data" if "Data" in df.columns else None
+    )
+    coluna_produto_preco = coluna_produto_preco if coluna_produto_preco in df.columns else None
+    coluna_analise = coluna_analise if coluna_analise in df.columns else None
+    coluna_estado = coluna_estado if coluna_estado in df.columns else None
+    coluna_solicitante = coluna_solicitante if coluna_solicitante in df.columns else None
+    coluna_motivo = coluna_motivo if coluna_motivo in df.columns else None
+
+    # Se a coluna principal de extração não existir, emite um aviso e interrompe
+    if not (coluna_produto_preco or coluna_analise):
+        st.warning("Não foi possível encontrar as colunas de texto para extração (ex: 'CODIGO DO PRODUTO, QUANTIDADE E PREÇO SOLICITADO:'). Verifique o nome das colunas.")
+        return pd.DataFrame()
+    
+    dados_tratados = []
+
+    for index, row in df.iterrows():
+        # Combina as duas colunas de texto para maximizar a extração
+        texto_produtos = str(row.get(coluna_produto_preco, "")) + " " + str(row.get(coluna_analise, ""))
+        
+        produtos_extraidos = extrair_produtos(texto_produtos)
+        campos_extras = extrair_campos(texto_produtos)
+
+        # Prioriza colunas diretas da planilha, depois a extração do texto
+        estado = formatar_texto(row.get(coluna_estado, None)) or campos_extras.get('Estado')
+        solicitante = formatar_texto(row.get(coluna_solicitante, None)) or campos_extras.get('Solicitante')
+        motivo = formatar_texto(row.get(coluna_motivo, None)) or campos_extras.get('Motivo')
+
+        for produto, qtd, preco in produtos_extraidos:
+            dados_tratados.append({
+                "Data": row.get(coluna_data, None), 
+                "Produto": str(produto).strip() if produto else None,
+                "Quantidade": qtd if qtd is not None else 1,
+                "Preco_Solicitado": preco,
+                "Estado": estado,
+                "Solicitante": solicitante,
+                "Motivo": motivo,
+                "Contagem_Solicitacao": 1, 
+            })
+
+    df_tratado = pd.DataFrame(dados_tratados)
+
+    # Limpeza e criação de colunas de tempo
+    df_tratado["Data"] = pd.to_datetime(df_tratado["Data"], errors="coerce")
+    df_tratado = df_tratado.dropna(subset=["Data"]) # Remove linhas sem data válida
+
+    df_tratado["Data_Dia"] = df_tratado["Data"].dt.strftime("%Y-%m-%d") 
+    df_tratado["AnoMes"] = df_tratado["Data"].dt.to_period("M").astype(str)
+    df_tratado["AnoSemana"] = df_tratado["Data"].dt.strftime("%Y-%W") 
+
+    # Filtragem de dados nulos/inválidos de Produto
+    df_tratado = df_tratado.dropna(subset=["Produto"])
+    df_tratado = df_tratado[df_tratado["Produto"].str.lower() != "none"]
+
+    # Ajuste: Garantir que Quantidade é um número inteiro ANTES DA AGREGAÇÃO
+    df_tratado["Quantidade"] = pd.to_numeric(df_tratado["Quantidade"], errors='coerce').fillna(0).astype(int) 
+
+    # Padronização
+    df_tratado["Produto"] = df_tratado["Produto"].apply(padronizar_produto)
+    df_tratado["Estado"] = df_tratado["Estado"].apply(padronizar_estado)
+    df_tratado["Solicitante"] = df_tratado["Solicitante"].apply(padronizar_solicitante)
+    df_tratado["Motivo_Agrupado"] = df_tratado["Motivo"].apply(padronizar_motivo)
+    
+    # Cálculo do Valor Total do Item
+    df_tratado["Valor_Total_Item"] = df_tratado["Quantidade"] * df_tratado["Preco_Solicitado"]
+
+    return df_tratado
+
 # -------------------------
 # App principal
 # -------------------------
@@ -334,80 +510,31 @@ def main():
     st.markdown("---") # Linha divisória
 
     if arquivo:
-        # Carregar dados
-        try:
-            df = pd.read_excel(arquivo, sheet_name="Respostas do Formulário 1")
-        except:
-            st.error("Erro ao carregar a aba 'Respostas do Formulário 1'. Verifique o nome da aba no seu arquivo.")
+        # -------------------------
+        # Carregar e Tratar Dados com Cache
+        # -------------------------
+        # Força o recarregamento dos dados se o arquivo mudar
+        if 'arquivo_hash' not in st.session_state or st.session_state['arquivo_hash'] != hash(arquivo.read()):
+            # Atualiza o hash e limpa o cache para forçar o load_data a rodar
+            st.session_state['arquivo_hash'] = hash(arquivo.read())
+            load_data.clear()
+            arquivo.seek(0) # Volta o ponteiro do arquivo para o início
+
+        with st.spinner('Processando e limpando os dados. Isso pode levar alguns segundos...'):
+            # Passa o objeto arquivo, não o hash
+            df_tratado = load_data(arquivo) 
+        
+        if df_tratado.empty:
             return
 
-        df.columns = df.columns.str.strip()
-
         # -------------------------
-        # Tratamento de Dados (Mantido)
-        # -------------------------
-        dados_tratados = []
-        coluna_produto_preco = "CODIGO DO PRODUTO, QUANTIDADE E PREÇO SOLICITADO:"
-        coluna_analise = "ANALISE NEGOCIAÇÃO"
-
-        coluna_produto_preco = coluna_produto_preco if coluna_produto_preco in df.columns else None
-        coluna_analise = coluna_analise if coluna_analise in df.columns else None
-        coluna_estado = "ESTADO:" if "ESTADO:" in df.columns else None
-        coluna_solicitante = "SOLICITANTE:" if "SOLICITANTE:" in df.columns else None
-        coluna_motivo = "MOTIVO:" if "MOTIVO:" in df.columns else None
-        
-        for index, row in df.iterrows():
-            texto_produtos = str(row.get(coluna_produto_preco, "")) + " " + str(row.get(coluna_analise, ""))
-            
-            produtos_extraidos = extrair_produtos(texto_produtos)
-            campos_extras = extrair_campos(texto_produtos)
-
-            estado = formatar_texto(row.get(coluna_estado, None)) or campos_extras['Estado']
-            solicitante = formatar_texto(row.get(coluna_solicitante, None)) or campos_extras['Solicitante']
-            motivo = formatar_texto(row.get(coluna_motivo, None)) or campos_extras['Motivo']
-
-            for produto, qtd, preco in produtos_extraidos:
-                dados_tratados.append({
-                    "Data": row.get("Data", None),
-                    "Produto": str(produto).strip() if produto else None,
-                    "Quantidade": qtd if qtd is not None else 1,
-                    "Preco_Solicitado": preco,
-                    "Estado": estado,
-                    "Solicitante": solicitante,
-                    "Motivo": motivo,
-                    "Contagem_Solicitacao": 1, 
-                })
-
-        df_tratado = pd.DataFrame(dados_tratados)
-
-        # Limpeza e criação de colunas de tempo
-        df_tratado["Data"] = pd.to_datetime(df_tratado["Data"], errors="coerce")
-        df_tratado["Data_Dia"] = df_tratado["Data"].dt.strftime("%Y-%m-%d") # Nova coluna para Dia (chave do heatmap)
-        df_tratado["AnoMes"] = df_tratado["Data"].dt.to_period("M").astype(str)
-        df_tratado["AnoSemana"] = df_tratado["Data"].dt.strftime("%Y-%W") 
-
-        # Filtragem de dados nulos/inválidos
-        df_tratado = df_tratado.dropna(subset=["Produto"])
-        df_tratado = df_tratado[df_tratado["Produto"].str.lower() != "none"]
-
-        # Padronização
-        df_tratado["Produto"] = df_tratado["Produto"].apply(padronizar_produto)
-        df_tratado["Estado"] = df_tratado["Estado"].apply(padronizar_estado)
-        df_tratado["Solicitante"] = df_tratado["Solicitante"].apply(padronizar_solicitante)
-        df_tratado["Motivo_Agrupado"] = df_tratado["Motivo"].apply(padronizar_motivo)
-        
-        # Cálculo do Valor Total do Item
-        df_tratado["Valor_Total_Item"] = df_tratado["Quantidade"] * df_tratado["Preco_Solicitado"]
-        
-        # -------------------------
-        # Filtros Interativos (Sidebar)
+        # Filtros Interativos (Sidebar) 
         # -------------------------
         st.sidebar.header("Filtros de Análise Secundários")
         
         # 1. Filtro de Data
         data_validas = df_tratado["Data"].dropna().dt.date
         if data_validas.empty:
-            # Caso não haja datas válidas, usa a data de hoje como fallback
             min_date = datetime.now().date()
             max_date = datetime.now().date()
         else:
@@ -418,7 +545,6 @@ def main():
         st.sidebar.markdown("##### 📅 Filtro por Período")
         col_data1, col_data2 = st.sidebar.columns(2)
         with col_data1:
-            # Ajuste de tamanho implícito devido ao CSS .css-1d391kg (width: 300px) e colunas
             data_inicio = st.date_input("De", value=min_date, min_value=min_date, max_value=max_date, key='data_inicio')
         with col_data2:
             data_fim = st.date_input("Até", value=max_date, min_value=min_date, max_value=max_date, key='data_fim')
@@ -449,7 +575,7 @@ def main():
             return
 
         # -------------------------
-        # CARTÃO DE FILTRO DE ESTADO (Área Principal) - Movido para o topo da área principal
+        # CARTÃO DE FILTRO DE ESTADO (Área Principal) 
         # -------------------------
         lista_estados = sorted(df_filtros["Estado"].dropna().astype(str).unique())
         opcoes_estados = ["Todos"] + lista_estados
@@ -467,7 +593,7 @@ def main():
         
         # Checagem final após filtro de estado
         if df_filtros.empty:
-            st.warning(f"Nenhum dado encontrado para o Estado: {estado_selecionado}.")
+            st.warning(f"Nenhum dado encontrado para o Estado: **{estado_selecionado}**.")
             return
             
         st.markdown("---")
@@ -477,18 +603,19 @@ def main():
         # -------------------------
         total_solicitacoes = df_filtros.shape[0] 
         total_quantidade = df_filtros["Quantidade"].sum()
-        total_valor_negociado = df_filtros["Valor_Total_Item"].sum()
+        total_valor_negociado = df_filtros["Valor_Total_Item"].sum() 
         
         # Usando um layout de coluna para os cards de métricas
         col_metrica1, col_metrica2, col_metrica3, col_metrica4 = st.columns(4, gap='large')
         
         # Métrica 1: Total de Solicitações
         with col_metrica1:
-            st.metric("Total de Solicitações", f"{total_solicitacoes:,}".replace(",", "."))
+            st.metric("Total de Solicitações", f"{total_solicitacoes:,.0f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
-        # Métrica 2: Volume Total de Itens
+        # Métrica 2: Volume Total de Itens (Usa a função de K/M/B)
         with col_metrica2:
-            display_total_quantidade_short = formatar_valor_metrica(total_quantidade).replace("R$ ", "")
+            display_total_quantidade_short = formatar_quantidade_metrica(total_quantidade)
+            
             display_total_quantidade_long = f"{total_quantidade:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
             st.metric(
@@ -497,11 +624,11 @@ def main():
                 help=f"Volume exato: {display_total_quantidade_long}. Valores são formatados com K (Mil), M (Milhão) ou B (Bilhão)."
             )
         
-        # Métrica 3: Valor Total Negociado
+        # Métrica 3: Valor Total Negociado (Usa a função de R$ K/M/B)
         with col_metrica3:
             display_total_valor_short = formatar_valor_metrica(total_valor_negociado)
 
-            if not pd.isna(total_valor_negociado):
+            if not pd.isna(total_valor_negociado) and total_valor_negociado is not None:
                 display_total_valor_long = f"R$ {total_valor_negociado:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             else:
                 display_total_valor_long = "R$ 0,00"
@@ -519,20 +646,20 @@ def main():
         st.markdown("---")
 
         # -------------------------
-        # Configuração de Template do Plotly (Visuais Profissionais)
+        # Configuração de Template do Plotly 
         # -------------------------
         PLOTLY_TEMPLATE = "plotly_dark" 
         
         # Definição de Cores
-        COLOR_VOLUME = '#1f77b4'  # Azul corporativo
+        COLOR_VOLUME = '#1f77b4' # Azul corporativo
         COLOR_FREQUENCIA = '#ff7f0e' # Laranja para contraste
         COLOR_SOLICITANTE = '#2ca02c' # Verde
         COLOR_MOTIVO = '#d62728' # Vermelho/Tijolo
         
         # -------------------------
-        # SEÇÃO 1: Análise Comparativa de Produtos (Mantido)
+        # SEÇÃO 1: Análise Comparativa de Produtos
         # -------------------------
-        st.subheader("Análise 1: Comparativo de Produtos (Volume vs. Frequência)")
+        st.subheader("Análise 1: Comparativo de Produtos (Volume de Itens vs. Frequência de Solicitação)")
         
         col_g1, col_g2 = st.columns(2, gap='medium')
         
@@ -540,6 +667,7 @@ def main():
         with col_g1:
             st.markdown("##### 📦 Volume Total de Itens por Produto (Top 10)")
             
+            # Cálculo de Volume: SOMA da coluna Quantidade
             top_produtos_volume = df_filtros.groupby("Produto")["Quantidade"].sum().sort_values(ascending=False).head(10).reset_index()
             top_produtos_volume.columns = ["Produto", "Quantidade Total"]
             
@@ -547,13 +675,13 @@ def main():
                 top_produtos_volume,
                 x="Produto",
                 y="Quantidade Total",
-                title="Top 10 Produtos por Volume",
-                template=PLOTLY_TEMPLATE, # Aplicando o template escuro
+                title="Top 10 Produtos por Volume de Itens",
+                template=PLOTLY_TEMPLATE, 
             )
             
-            # Formatação
+            # Formatação: Usa a função formatar_quantidade_metrica para exibir o valor em K/M/B
             fig_top_produtos_volume.update_traces(
-                text=top_produtos_volume["Quantidade Total"].apply(lambda x: f"{x:,.0f}".replace(",", ".")), # Formatação BR no texto
+                text=top_produtos_volume["Quantidade Total"].apply(formatar_quantidade_metrica), 
                 texttemplate='%{text}', 
                 textposition='outside', 
                 marker_color=COLOR_VOLUME
@@ -564,26 +692,28 @@ def main():
 
         # --- COLUNA 2: GRÁFICO 2 (CONTAGEM DE SOLICITAÇÕES POR PRODUTO) ---
         with col_g2:
-            st.markdown("##### 📈 Frequência de Solicitações por Produto (Contagem - Top 10)")
+            st.markdown("##### 📈 Frequência de Solicitações por Produto (Top 10)")
             
+            # Cálculo de Frequência: CONTAGEM de linhas (solicitações)
             top_produtos_contagem = df_filtros.groupby("Produto").size().reset_index(name='Contagem de Solicitações').sort_values("Contagem de Solicitações", ascending=False).head(10)
             
             fig_top_produtos_contagem = px.bar(
                 top_produtos_contagem,
                 x="Produto",
                 y="Contagem de Solicitações",
-                title="Top 10 Produtos por Frequência",
-                template=PLOTLY_TEMPLATE, # Aplicando o template escuro
+                title="Top 10 Produtos por Frequência de Solicitação",
+                template=PLOTLY_TEMPLATE, 
             )
             
-            # Formatação
+            # Formatação: Exibe o número inteiro da contagem (Ex: 5)
             fig_top_produtos_contagem.update_traces(
-                text=top_produtos_contagem["Contagem de Solicitações"].apply(lambda x: f"{x:,.0f}".replace(",", ".")),
+                # Garante que o número seja exibido sem separador decimal (apenas separador de milhar se > 1000)
+                text=top_produtos_contagem["Contagem de Solicitações"].apply(lambda x: f"{x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")),
                 texttemplate='%{text}', 
                 textposition='outside', 
                 marker_color=COLOR_FREQUENCIA
             ) 
-            fig_top_produtos_contagem.update_yaxes(tickformat=',.') 
+            fig_top_produtos_contagem.update_yaxes(tickformat=',.', title_text="Número de Solicitações") 
             fig_top_produtos_contagem.update_xaxes(title_text="Produto (Códigos)")
             st.plotly_chart(fig_top_produtos_contagem, use_container_width=True)
 
@@ -591,7 +721,7 @@ def main():
         st.markdown("---")
         
         # -------------------------
-        # SEÇÃO 2: Solicitantes e Motivos (Mantido)
+        # SEÇÃO 2: Solicitantes e Motivos 
         # -------------------------
         st.subheader("Análise 2: Solicitantes e Motivos de Negociação")
         
@@ -601,6 +731,7 @@ def main():
         with col_g3:
             st.markdown("##### 🧑 Solicitantes com Maior Frequência de Solicitações (Top 15)")
             
+            # Ordena ascendentemente para que o gráfico de barras horizontais fique do maior para o menor
             solicitantes_contagem = df_filtros.groupby("Solicitante").size().reset_index(name='Contagem').sort_values("Contagem", ascending=True).tail(15)
             
             fig_solicitantes = px.bar(
@@ -609,16 +740,17 @@ def main():
                 y="Solicitante", 
                 orientation='h', 
                 title="Top 15 Solicitantes",
-                template=PLOTLY_TEMPLATE, # Aplicando o template escuro
+                template=PLOTLY_TEMPLATE, 
             )
             
-            # Formatação
+            # Formatação 
             fig_solicitantes.update_traces(
-                text=solicitantes_contagem["Contagem"].apply(lambda x: f"{x:,.0f}".replace(",", ".")),
+                text=solicitantes_contagem["Contagem"].apply(formatar_quantidade_metrica), 
                 texttemplate='%{text}', 
                 textposition='outside', 
                 marker_color=COLOR_SOLICITANTE
             )
+            # Mantém tickformat compacto para o Plotly cuidar do eixo
             fig_solicitantes.update_xaxes(tickformat=".2s", title_text="Número de Solicitações (Mil/Milhão)")
             fig_solicitantes.update_layout(yaxis={'categoryorder':'total ascending'})
             st.plotly_chart(fig_solicitantes, use_container_width=True)
@@ -634,12 +766,13 @@ def main():
                 x="Motivo_Agrupado",
                 y="Contagem",
                 title="Top 10 Motivos",
-                template=PLOTLY_TEMPLATE, # Aplicando o template escuro
+                template=PLOTLY_TEMPLATE, 
             )
             
-            # Formatação
+            # Formatação 
             fig_motivos.update_traces(
-                text=motivos_contagem["Contagem"].head(10).apply(lambda x: f"{x:,.0f}".replace(",", ".")),
+                # Garante que o número seja exibido sem separador decimal (apenas separador de milhar se > 1000)
+                text=motivos_contagem["Contagem"].head(10).apply(lambda x: f"{x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")),
                 texttemplate='%{text}', 
                 textposition='outside', 
                 marker_color=COLOR_MOTIVO
@@ -651,5 +784,10 @@ def main():
             
         st.markdown("---")
 
+
 if __name__ == '__main__':
+    # Adiciona o estado de sessão para controle de cache
+    if 'arquivo_hash' not in st.session_state:
+        st.session_state['arquivo_hash'] = None
+        
     main()
