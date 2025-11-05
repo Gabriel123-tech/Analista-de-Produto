@@ -303,37 +303,78 @@ def remover_acentos(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
 
 
-
 def padronizar_entidade(texto, mapeamento_personalizado=None):
     if not isinstance(texto, str):
         return texto
-
     chave = remover_acentos(texto).strip().lower()
-
     mapa = {
-        "griele": "Grieli",
-        "bianca": "Bianca",
-        "bianca nunes": "Bianca",
-        "bianca silva": "Bianca",
-        "sarah": "Sarah",
-        "sara": "Sarah",
-        "sarah macieski": "Sarah",
-        "renata rodrigues": "Rodrigues",
-        "renata soares": "Rodrigues",
-        "renata jesus": "Jesus"
+        'griele': 'Griele',
+        'grieli': 'Griele',
+        'bianca': 'Bianca',
+        'bianca nunes': 'Bianca',
+        'bianca silva': 'Bianca',
+        'sarah': 'Sarah',
+        'sara': 'Sarah',
+        'sarah macieski': 'Sarah',
+        'renata rodrigues': 'Rodrigues',
+        'renata soares': 'Rodrigues',
+        'renata jesus': 'Jesus',
+        'ms': 'MS',
+        'mato grosso do sul': 'MS',
+        'mato': 'MS',
+        'sc': 'SC',
+        'santa catarina': 'SC',
+        'rs': 'RS',
+        'rio grande do sul': 'RS',
+        'pr': 'PR',
+        'parana': 'PR',
+        'sp': 'SP',
+        'sao paulo': 'SP'
     }
-
-    if chave == "renata":
+    if chave == 'renata':
         return None
-    if chave.startswith("renata"):
-        if "rodrigues" in chave or "soares" in chave:
-            return "Rodrigues"
-        elif "jesus" in chave:
-            return "Jesus"
+    if chave.startswith('renata'):
+        if 'rodrigues' in chave or 'soares' in chave:
+            return 'Rodrigues'
+        elif 'jesus' in chave:
+            return 'Jesus'
         else:
             return texto.split()[-1].title()
-
     return mapa.get(chave, texto.split()[0].title())
+    """
+    Padroniza um campo de texto (Solicitante, Estado) removendo acentos e usando um mapeamento.
+    """
+    if not isinstance(texto, str):
+        return texto
+        
+    # 1. Normaliza para minúsculas e remove acentos para criar a chave de comparação
+    chave = remover_acentos(texto).strip().lower() 
+    
+    # 2. Mapeamento padrão para o Dashboard (Você pode expandir isso aqui!)
+    mapa = {
+        # --- Padronização de ESTADOS ---
+        "ms": "Mato Grosso do Sul",
+        "mato grosso do sul": "Mato Grosso do Sul",
+        "sc": "Santa Catarina",
+        "rs": "Rio Grande do Sul",
+        "pr": "Paraná",
+        "parana": "Paraná",
+        "sp": "São Paulo",
+        "sao paulo": "São Paulo",
+        
+        # --- Padronização de NOMES / SOLICITANTES ---
+        "griele": "Grieli", 
+        "bianca nunes": "Bianca", 
+        "sarah macieski": "Sarah", 
+        "renata jesus": "Renata",
+        "renata rodrigues": "Renata",
+        
+        # O mapeamento personalizado (se fornecido) tem prioridade
+        **(mapeamento_personalizado if mapeamento_personalizado else {})
+    }
+    
+    # 3. Retorna o valor padronizado se encontrado, senão retorna o texto original formatado (Title Case)
+    return mapa.get(chave, formatar_texto(texto))
 
 
 def padronizar_estado(estado):
