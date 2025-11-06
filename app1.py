@@ -9,7 +9,7 @@ import unicodedata
 # Configuração inicial do Streamlit e Layout
 # ----------------------------------------------------
 st.set_page_config(
-    page_title="Analisador de Produtos e Pedidos", 
+    page_title="Analisador de Produtos e Negociações", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
@@ -828,4 +828,5 @@ if __name__ == '__main__':
         st.session_state['arquivo_hash'] = None
         
     main()
+
 
