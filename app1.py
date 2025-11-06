@@ -534,7 +534,7 @@ def load_data(arquivo):
 # App principal
 # -------------------------
 def main():
-    st.title("📦📈 Dashboard Estratégico de Solicitações de Produtos")
+    st.title("📦📈 Dashboard Estratégico de Solicitações de Negociação")
     
     # -------------------------
     # LAYOUT DE FILTRO PRINCIPAL (Estado)
@@ -828,3 +828,4 @@ if __name__ == '__main__':
         st.session_state['arquivo_hash'] = None
         
     main()
+
